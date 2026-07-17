@@ -15,7 +15,7 @@ OUTPUT_DIR="/home/dataset/data/z84450662/AnyRecon/example/v2w_bridge_test"
 # Test settings.
 # ============================================================
 NUM_COND_FRAMES=6
-NUM_RENDER_FRAMES=35
+NUM_RENDER_FRAMES=-1
 CONF_THRESHOLD=0.1
 MAX_POINTS=0
 PIXEL_STRIDE=1

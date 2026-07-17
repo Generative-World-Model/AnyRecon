@@ -73,7 +73,20 @@ bash run_pi3.sh
 - the **remaining frames** are the **test views** — they are *only* used to estimate the camera poses at which the point cloud is rendered, and **do not contribute any points** to the reconstruction.
 
 
-**Custom test-view trajectory (no test frames needed).** If you'd rather specify a custom rendering trajectory instead of estimating poses from real test-view images, you can replace the test-view portion of the video with any placeholder frames and override `target_extrinsics[num_cond_frames:]` inside `process_scene` with your desired sequence of `world→camera` 4×4 matrices. The capture views (the first `num_cond_frames` frames) will still be used to build the point cloud, and rendering proceeds along your chosen trajectory.
+**Custom test-view trajectory.** You can replace the test-view portion of the input video with placeholder frames and provide a NumPy trajectory directly:
+
+```bash
+python run_pi3.py \
+    --base_scene_dir example/my_scene.mp4 \
+    --num_cond_frames 6 \
+    --output_dir example/my_scene_custom \
+    --trajectory_path forward_trajectory.npy \
+    --trajectory_convention c2w
+```
+
+The trajectory must be a `.npy` array with shape `(num_render_frames, 4, 4)`, where `num_render_frames` is the number of input frames after the first `num_cond_frames` capture views. Both camera-to-world (`c2w`) and world-to-camera (`w2c`) matrices are supported. By default, the first custom pose is rigidly aligned to the last capture-view pose estimated by π³, so a relative trajectory may start at the identity matrix. Pass `--no-align_trajectory_first_pose` only when the trajectory is already expressed in π³'s reconstructed world frame.
+
+The capture views still provide all points used for reconstruction. The placeholder frames determine only the required number of rendered target views; their π³-estimated poses are replaced by the supplied trajectory.
 
 Once `run_pi3.py` has produced the condition videos in `--output_dir`, point `run_AnyRecon.py --root_dir` to that directory and run inference as shown above.
 

@@ -36,7 +36,7 @@ pip install -r Pi3/requirements.txt
 ```
 
 ###  2. Download Models
-AnyRecon relies on specific pre-trained weights. Please download them and place them in the `./checkpoints` folder.
+AnyRecon relies on specific pre-trained weights. By default, Wan2.1 weights are read from `./checkpoints`; use `--wan_model_dir` to load them from another directory.
 
 - Base Video Diffusion Model (Wan2.1 I2V 14B 720P) [[download](https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P/tree/main)]
 - AnyRecon LoRA weights [[download](https://huggingface.co/Yutian10/AnyRecon/tree/main)]
@@ -52,10 +52,13 @@ bash test.sh
 Or directly:
 
 ```bash
+BASE_DIR="/home/dataset/data/z84450662/hf_models"
+
 python run_AnyRecon.py \
     --root_dir example/valley \
     --output_dir example/valley \
-    --lora_path full_attention.ckpt
+    --wan_model_dir "${BASE_DIR}/Wan-AI/Wan2.1-I2V-14B-720P" \
+    --lora_path "${BASE_DIR}/Yutian10/AnyRecon/AnyRecon_full_attention.ckpt"
 ```
 
 ## 🌟 Run on Your Own Data
@@ -76,10 +79,13 @@ bash run_pi3.sh
 **Custom test-view trajectory.** You can replace the test-view portion of the input video with placeholder frames and provide a NumPy trajectory directly:
 
 ```bash
+BASE_DIR="/home/dataset/data/z84450662/hf_models"
+
 python run_pi3.py \
     --base_scene_dir example/my_scene.mp4 \
     --num_cond_frames 6 \
     --output_dir example/my_scene_custom \
+    --ckpt "${BASE_DIR}/yyfz233/Pi3/model.safetensors" \
     --trajectory_path forward_trajectory.npy \
     --trajectory_convention c2w
 ```

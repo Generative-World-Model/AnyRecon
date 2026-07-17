@@ -30,6 +30,7 @@ cd "$ANYRECON_DIR"
     --num_render_frames "$NUM_RENDER_FRAMES" \
     --conf_threshold "$CONF_THRESHOLD" \
     --max_points "$MAX_POINTS" \
-    --pixel_stride "$PIXEL_STRIDE"
+    --pixel_stride "$PIXEL_STRIDE" \
+    --use_retrieval
 
 echo "Finished. Outputs are in: $OUTPUT_DIR"

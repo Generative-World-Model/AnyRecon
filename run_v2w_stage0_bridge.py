@@ -32,21 +32,71 @@ def _as_homogeneous(matrix):
 
 
 def load_stage0_results(npz_path):
-    required_keys = {"depth", "conf", "extrinsics", "intrinsics", "image"}
+    pi3_raw_keys = {
+        "image",
+        "points",
+        "conf",
+        "camera_poses",
+        "intrinsics",
+    }
+    depth_keys = {"depth", "conf", "extrinsics", "intrinsics", "image"}
+
     with np.load(npz_path) as data:
-        missing = sorted(required_keys.difference(data.files))
-        if missing:
+        available = set(data.files)
+        if pi3_raw_keys.issubset(available):
+            results = {
+                key: np.asarray(data[key])
+                for key in pi3_raw_keys
+            }
+            results["_geometry_type"] = "pi3_raw"
+        elif depth_keys.issubset(available):
+            results = {
+                key: np.asarray(data[key])
+                for key in depth_keys
+            }
+            results["_geometry_type"] = "depth"
+        else:
             raise KeyError(
-                f"Missing keys in {npz_path}: {missing}. "
-                f"Available keys: {sorted(data.files)}"
+                f"Unsupported NPZ layout in {npz_path}. "
+                f"Available keys: {sorted(available)}. Expected either "
+                f"Pi3 raw keys {sorted(pi3_raw_keys)} or "
+                f"depth keys {sorted(depth_keys)}."
             )
-        results = {key: np.asarray(data[key]) for key in required_keys}
+
+    images = results["image"]
+    conf = results["conf"]
+
+    if results["_geometry_type"] == "pi3_raw":
+        points = results["points"]
+        if points.ndim != 4 or points.shape[-1] != 3:
+            raise ValueError(
+                f"points must have shape (N, H, W, 3), got {points.shape}."
+            )
+        n, h, w, _ = points.shape
+        if conf.shape != (n, h, w):
+            raise ValueError(
+                f"conf has shape {conf.shape}, expected {(n, h, w)}."
+            )
+        if images.shape != (n, h, w, 3):
+            raise ValueError(
+                f"image has shape {images.shape}, expected {(n, h, w, 3)}."
+            )
+        if results["camera_poses"].shape != (n, 4, 4):
+            raise ValueError(
+                "camera_poses must have shape "
+                f"{(n, 4, 4)}, got {results['camera_poses'].shape}."
+            )
+        if results["intrinsics"].shape != (n, 3, 3):
+            raise ValueError(
+                "intrinsics must have shape "
+                f"{(n, 3, 3)}, got {results['intrinsics'].shape}."
+            )
+        print("Detected Pi3 raw NPZ; using saved global point maps directly.")
+        return results
 
     depth = results["depth"]
-    conf = results["conf"]
     extrinsics = results["extrinsics"]
     intrinsics = results["intrinsics"]
-    images = results["image"]
 
     if depth.ndim != 3:
         raise ValueError(f"depth must have shape (N, H, W), got {depth.shape}.")
@@ -73,17 +123,109 @@ def load_stage0_results(npz_path):
             f"image has shape {images.shape}, expected {(n, h, w, 3)}."
         )
 
+    print("Detected depth-based Stage 0 NPZ; back-projecting depth maps.")
     return results
+
+
+def build_pi3_raw_point_cloud(
+    results,
+    point_frame_indices,
+    conf_threshold,
+    pixel_stride,
+    max_points,
+    seed,
+):
+    """Match run_pi3.py point selection using saved Pi3 global point maps."""
+    if pixel_stride < 1:
+        raise ValueError("--pixel_stride must be at least 1.")
+
+    points_map = results["points"]
+    conf = results["conf"]
+    images = results["image"]
+
+    all_points = []
+    all_colors = []
+    all_source_indices = []
+
+    for frame_idx in point_frame_indices:
+        points_i = points_map[
+            frame_idx,
+            ::pixel_stride,
+            ::pixel_stride,
+        ]
+        conf_i = conf[
+            frame_idx,
+            ::pixel_stride,
+            ::pixel_stride,
+        ]
+        image_i = images[
+            frame_idx,
+            ::pixel_stride,
+            ::pixel_stride,
+        ]
+
+        # preprocess_video_pi3.py stores sigmoid(conf) after multiplying
+        # by the non-edge mask. Applying > 0.1 therefore reproduces:
+        # (sigmoid(conf) > 0.1) & non_edge.
+        valid = conf_i > conf_threshold
+        if not np.any(valid):
+            print(f"Warning: frame {frame_idx} contributed no valid points.")
+            continue
+
+        points = points_i[valid].astype(np.float32)
+        colors = image_i[valid]
+        if colors.dtype != np.uint8:
+            colors_float = colors.astype(np.float32)
+            if colors_float.max(initial=0.0) <= 1.0:
+                colors_float *= 255.0
+            colors = np.clip(colors_float, 0, 255).astype(np.uint8)
+
+        all_points.append(points)
+        all_colors.append(colors)
+        all_source_indices.append(
+            np.full(points.shape[0], frame_idx, dtype=np.int32)
+        )
+
+    if not all_points:
+        raise ValueError("Selected Pi3 frames produced an empty point cloud.")
+
+    points = np.concatenate(all_points, axis=0)
+    colors = np.concatenate(all_colors, axis=0)
+    source_indices = np.concatenate(all_source_indices, axis=0)
+
+    if max_points > 0 and len(points) > max_points:
+        rng = np.random.default_rng(seed)
+        keep = rng.choice(len(points), size=max_points, replace=False)
+        points = points[keep]
+        colors = colors[keep]
+        source_indices = source_indices[keep]
+
+    print(
+        f"Selected {len(points):,} saved Pi3 points from "
+        f"{len(point_frame_indices)} frames with conf > {conf_threshold}."
+    )
+    return points, colors, source_indices
 
 
 def build_stage0_point_cloud(
     results,
     point_frame_indices,
     conf_percentile,
+    conf_threshold,
     pixel_stride,
     max_points,
     seed,
 ):
+    if results["_geometry_type"] == "pi3_raw":
+        return build_pi3_raw_point_cloud(
+            results=results,
+            point_frame_indices=point_frame_indices,
+            conf_threshold=conf_threshold,
+            pixel_stride=pixel_stride,
+            max_points=max_points,
+            seed=seed,
+        )
+
     depth = results["depth"]
     conf = results["conf"]
     extrinsics = results["extrinsics"]
@@ -474,7 +616,10 @@ def parse_args():
     parser.add_argument(
         "--stage0_npz",
         required=True,
-        help="Path to video_to_world exports/npz/results.npz.",
+        help=(
+            "Path to results_pi3_raw.npz (exact Pi3 points) or "
+            "depth-based results.npz."
+        ),
     )
     parser.add_argument(
         "--trajectory_json",
@@ -499,7 +644,13 @@ def parse_args():
         "--conf_percentile",
         type=float,
         default=40.0,
-        help="Global Stage 0 confidence percentile used to filter points.",
+        help="Global confidence percentile for depth-based NPZ inputs.",
+    )
+    parser.add_argument(
+        "--conf_threshold",
+        type=float,
+        default=0.1,
+        help="Absolute confidence threshold for Pi3 raw NPZ inputs.",
     )
     parser.add_argument("--pixel_stride", type=int, default=1)
     parser.add_argument("--max_points", type=int, default=1_000_000)
@@ -551,7 +702,7 @@ def main():
         raise ValueError("--num_cond_frames must be at least 1.")
 
     results = load_stage0_results(args.stage0_npz)
-    num_stage0_frames = results["depth"].shape[0]
+    num_stage0_frames = results["image"].shape[0]
     if args.num_cond_frames > num_stage0_frames:
         raise ValueError(
             f"--num_cond_frames={args.num_cond_frames} exceeds the "
@@ -567,6 +718,7 @@ def main():
         results=results,
         point_frame_indices=point_frame_indices,
         conf_percentile=args.conf_percentile,
+        conf_threshold=args.conf_threshold,
         pixel_stride=args.pixel_stride,
         max_points=args.max_points,
         seed=args.seed,

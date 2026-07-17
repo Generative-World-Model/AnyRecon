@@ -96,6 +96,43 @@ The capture views still provide all points used for reconstruction. The placehol
 
 Once `run_pi3.py` has produced the condition videos in `--output_dir`, point `run_AnyRecon.py --root_dir` to that directory and run inference as shown above.
 
+### Bridge video_to_world Stage 0 outputs
+
+To test AnyRecon using DA3 geometry and the matching extended camera path exported by [video_to-world](https://github.com/lukasHoel/video_to_world), run:
+
+```bash
+python run_v2w_stage0_bridge.py \
+    --stage0_npz /path/to/scene/exports/npz/results.npz \
+    --trajectory_json /path/to/scene/gs_video/0000_extend_transforms.json \
+    --output_dir example/v2w_bridge \
+    --num_cond_frames 6 \
+    --num_render_frames 35 \
+    --conf_percentile 40
+```
+
+The bridge:
+
+- back-projects `depth` using the Stage 0 `intrinsics` and world-to-camera `extrinsics`,
+- globally filters points by the selected DA3 confidence percentile,
+- converts the JSON trajectory from NeRF/OpenGL camera-to-world poses to OpenCV poses,
+- applies the JSON `scale_factor` to trajectory translations,
+- rescales `fl_x`, `fl_y`, `cx`, and `cy` when the render resolution is overridden,
+- renders point-cloud RGB conditions and validity masks in 35-frame chunks.
+
+By default, only the first `--num_cond_frames` Stage 0 views contribute geometry. Pass `--use_all_stage0_points` to merge points from every Stage 0 frame, and `--use_retrieval` to select the most visible source images for each chunk. Set `--num_render_frames -1` to read the full trajectory. A final incomplete chunk is dropped by default for AnyRecon compatibility; pass `--allow_partial_chunk` to retain it.
+
+Then run generation:
+
+```bash
+python run_AnyRecon.py \
+    --root_dir example/v2w_bridge \
+    --output_dir example/v2w_bridge/results \
+    --wan_model_dir "${BASE_DIR}/Wan-AI/Wan2.1-I2V-14B-720P" \
+    --lora_path "${BASE_DIR}/Yutian10/AnyRecon/AnyRecon_full_attention.ckpt"
+```
+
+This path bypasses Pi3: the Stage 0 point cloud and exported trajectory remain in the same DA3 world coordinate system and scale.
+
 ## 💗 Acknowledgments
 Thanks to these great repositories: [Wan2.1](https://github.com/Wan-Video/Wan2.1), [DiffSynth-Studio](https://github.com/modelscope/DiffSynth-Studio), and [π³](https://github.com/yyfz/Pi3/).
 

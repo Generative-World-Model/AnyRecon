@@ -432,6 +432,59 @@ def _smooth_render_trajectory(poses_c2w, window_size=5, rot_iters=5):
     return smooth_poses_c2w
 
 
+def _load_custom_trajectory(
+    trajectory_path,
+    convention,
+    expected_frames,
+    anchor_c2w,
+    align_first_pose=True,
+):
+    """Load a custom trajectory and return world-to-camera render extrinsics.
+
+    The input must be a NumPy array of shape (N, 4, 4). When
+    align_first_pose is enabled, its first camera pose is rigidly aligned
+    to the last capture-view pose estimated by Pi3, preserving the custom
+    trajectory's relative motion while placing it in Pi3's world frame.
+    """
+    custom_poses = np.load(trajectory_path)
+
+    if isinstance(custom_poses, np.lib.npyio.NpzFile):
+        custom_poses.close()
+        raise ValueError(
+            "Custom trajectory must be a .npy array, not a .npz archive."
+        )
+
+    custom_poses = np.asarray(custom_poses, dtype=np.float64)
+    expected_shape = (expected_frames, 4, 4)
+    if custom_poses.shape != expected_shape:
+        raise ValueError(
+            f"Expected trajectory shape {expected_shape}, "
+            f"but got {custom_poses.shape}."
+        )
+    if not np.isfinite(custom_poses).all():
+        raise ValueError("Custom trajectory contains NaN or infinite values.")
+    if not np.allclose(
+        custom_poses[:, 3, :],
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        atol=1e-5,
+    ):
+        raise ValueError(
+            "Every trajectory pose must be a homogeneous 4x4 transform "
+            "with last row [0, 0, 0, 1]."
+        )
+
+    if convention == "w2c":
+        custom_c2w = np.linalg.inv(custom_poses)
+    else:
+        custom_c2w = custom_poses
+
+    if align_first_pose:
+        alignment = anchor_c2w @ np.linalg.inv(custom_c2w[0])
+        custom_c2w = alignment[None] @ custom_c2w
+
+    return np.linalg.inv(custom_c2w).astype(np.float32)
+
+
 def process_scene(model, device, scene_dir, args):
     print(f"\n====================================================\n"
           f"Processing scene: {scene_dir}\n"
@@ -490,6 +543,12 @@ def process_scene(model, device, scene_dir, args):
         print(f"Intrinsics prediction failed: {e}")
 
     num_cond_frames = args.num_cond_frames
+    if not 0 < num_cond_frames <= num_frames_total:
+        raise ValueError(
+            f"--num_cond_frames must be in [1, {num_frames_total}], "
+            f"but got {num_cond_frames}."
+        )
+
     masks_first_cond = masks.clone()
     masks_first_cond[num_cond_frames:] = False
     valid_points = res['points'][0][masks_first_cond].cpu().numpy()
@@ -500,9 +559,30 @@ def process_scene(model, device, scene_dir, args):
 
     poses_c2w = res['camera_poses'][0]
     extrinsics_w2c = torch.linalg.inv(poses_c2w).cpu().numpy()
-    target_extrinsics = extrinsics_w2c
+    target_extrinsics = extrinsics_w2c.copy()
 
-    if num_frames_total > num_cond_frames + 2:
+    num_render_frames = num_frames_total - num_cond_frames
+    if args.trajectory_path is not None:
+        if num_render_frames == 0:
+            raise ValueError(
+                "A custom trajectory was provided, but there are no render "
+                "frames after --num_cond_frames."
+            )
+
+        anchor_c2w = poses_c2w[num_cond_frames - 1].cpu().numpy()
+        target_extrinsics[num_cond_frames:] = _load_custom_trajectory(
+            trajectory_path=args.trajectory_path,
+            convention=args.trajectory_convention,
+            expected_frames=num_render_frames,
+            anchor_c2w=anchor_c2w,
+            align_first_pose=args.align_trajectory_first_pose,
+        )
+        print(
+            f"Loaded {num_render_frames} custom "
+            f"{args.trajectory_convention} camera poses from "
+            f"{args.trajectory_path}."
+        )
+    elif num_frames_total > num_cond_frames + 2:
         try:
             render_poses_c2w = poses_c2w[num_cond_frames:].cpu().numpy()
             smooth_render_poses_c2w = _smooth_render_trajectory(render_poses_c2w)
@@ -628,6 +708,15 @@ def main():
                         help="Base directory containing all data subdirectories")
     parser.add_argument("--num_cond_frames", type=int, default=6,
                         help="Number of leading frames used as conditioning views.")
+    parser.add_argument("--trajectory_path", type=str, default=None,
+                        help="Path to a custom .npy camera trajectory with shape "
+                             "(num_render_frames, 4, 4).")
+    parser.add_argument("--trajectory_convention", choices=["c2w", "w2c"], default="c2w",
+                        help="Pose convention used by --trajectory_path.")
+    parser.add_argument("--align_trajectory_first_pose",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="Rigidly align the first custom pose to the last "
+                             "capture-view pose estimated by Pi3.")
     parser.add_argument("--use_retrieval", action=argparse.BooleanOptionalAction, default=False,
                         help="Enable geometry-aware retrieval to pick top contributing "
                              "condition frames per chunk. If disabled (default), every "

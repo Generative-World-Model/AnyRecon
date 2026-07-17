@@ -12,28 +12,54 @@ parser.add_argument("--root_dir", type=str, required=True, help="Root directory 
 parser.add_argument("--output_dir", type=str, required=True, help="Output directory to save results")
 parser.add_argument("--is_block", action="store_true", help="Whether to use block attention")
 parser.add_argument("--lora_path", type=str, required=True, help="Path to the LoRA checkpoint")
+parser.add_argument(
+    "--wan_model_dir",
+    type=str,
+    default="./checkpoints",
+    help="Directory containing the Wan2.1-I2V-14B-720P model files.",
+)
 args = parser.parse_args()
+
+wan_model_dir = os.path.abspath(args.wan_model_dir)
+clip_path = os.path.join(
+    wan_model_dir,
+    "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+)
+diffusion_paths = [
+    os.path.join(
+        wan_model_dir,
+        f"diffusion_pytorch_model-{i:05d}-of-00007.safetensors",
+    )
+    for i in range(1, 8)
+]
+t5_path = os.path.join(
+    wan_model_dir,
+    "models_t5_umt5-xxl-enc-bf16.pth",
+)
+vae_path = os.path.join(wan_model_dir, "Wan2.1_VAE.pth")
+
+required_model_files = [clip_path, *diffusion_paths, t5_path, vae_path]
+missing_model_files = [
+    path for path in required_model_files if not os.path.isfile(path)
+]
+if missing_model_files:
+    missing_list = "\n".join(f"  - {path}" for path in missing_model_files)
+    raise FileNotFoundError(
+        f"Missing Wan2.1 model files under {wan_model_dir}:\n{missing_list}"
+    )
 
 model_manager = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
 
 model_manager.load_models(
-    ["./checkpoints/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"],
+    [clip_path],
     torch_dtype=torch.float32,
 )
 
 model_manager.load_models(
     [
-        [
-            "./checkpoints/diffusion_pytorch_model-00001-of-00007.safetensors",
-            "./checkpoints/diffusion_pytorch_model-00002-of-00007.safetensors",
-            "./checkpoints/diffusion_pytorch_model-00003-of-00007.safetensors",
-            "./checkpoints/diffusion_pytorch_model-00004-of-00007.safetensors",
-            "./checkpoints/diffusion_pytorch_model-00005-of-00007.safetensors",
-            "./checkpoints/diffusion_pytorch_model-00006-of-00007.safetensors",
-            "./checkpoints/diffusion_pytorch_model-00007-of-00007.safetensors",
-        ],
-        "./checkpoints/models_t5_umt5-xxl-enc-bf16.pth",
-        "./checkpoints/Wan2.1_VAE.pth",
+        diffusion_paths,
+        t5_path,
+        vae_path,
     ],
     torch_dtype=torch.bfloat16,
 )
